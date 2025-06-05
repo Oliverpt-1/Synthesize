@@ -58,7 +58,26 @@ function App() {
   };
 
   return (
-    <div className="relative min-h-screen bg-white text-gray-800 flex flex-col items-center justify-center p-4 overflow-hidden">
+    <div className="relative min-h-screen bg-white text-gray-800 flex flex-col items-center p-4 pt-24 overflow-hidden">
+      {/* Header Navigation */}
+      <header className="absolute top-0 left-0 w-full p-6 flex justify-between items-center z-20">
+        {/* Left Dropdown Menu (Open by default) */}
+        <div className="relative">
+          <div className="absolute mt-2 w-56 bg-white rounded-lg shadow-xl py-2 border border-gray-200">
+            <a href="#" className="block px-4 py-2 text-sm font-medium text-gray-700 hover:bg-green-50">My Audiobooks</a>
+            <a href="#" className="block px-4 py-2 text-sm font-medium text-gray-700 hover:bg-green-50">Billing</a>
+            <a href="#" className="block px-4 py-2 text-sm font-medium text-gray-700 hover:bg-green-50">Settings</a>
+          </div>
+        </div>
+
+        {/* Right Profile Icon */}
+        <div className="relative">
+          <button className="w-10 h-10 bg-gray-200 rounded-full flex items-center justify-center ring-2 ring-white hover:ring-green-300 transition-all">
+            <svg className="w-6 h-6 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"></path></svg>
+          </button>
+        </div>
+      </header>
+
       {/* Animated side elements */}
       <div className="absolute top-0 left-0 -translate-x-1/3 -translate-y-1/3">
           <div className="w-96 h-96 bg-green-200 rounded-full filter blur-3xl opacity-50 animate-blob"></div>
@@ -68,8 +87,11 @@ function App() {
       </div>
 
       <div className="relative z-10 w-full max-w-2xl bg-white/70 backdrop-blur-xl rounded-lg shadow-xl p-8 space-y-6">
-        <div className="text-center">
-          <h1 className="text-5xl font-bold text-gray-900">Synthesize</h1>
+        <div className="text-center flex flex-col items-center">
+          <img src="/Logo.png" alt="Synthesize Logo" className="w-24 h-24 mb-4" />
+          <h1 className="text-5xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-green-400 to-teal-600">
+            Synthesize
+          </h1>
           <p className="mt-2 text-lg text-gray-600">Learn on the go.</p>
         </div>
 
