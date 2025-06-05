@@ -36,61 +36,40 @@ class GenerateResponse(BaseModel):
     audio_id: str
     status: str
 
-# --- Pydantic Models for Agent Outputs ---
-class FetchedContent(BaseModel):
-    combined_text: str
-    original_request: str
+# --- New Pydantic Models for Chapter-based Generation ---
+class ChapterDetail(BaseModel):
+    chapter_title: str
+    chapter_description: str
+    chapter_length_minutes: float
 
-class FinalAudiobookScript(BaseModel):
-    script_in_chapters: str
+class TableOfContents(BaseModel):
+    chapters: List[ChapterDetail]
 
-# --- Tools ---
-@function_tool
-def fetch_data(filename: str) -> str:
-    """
-    Fetch the full content from a specified file expected at './documents/{filename}' relative to the script's CWD.
-    Valid filenames are 'investopedia.txt', 'kremp.txt', 'wikipedia.txt'.
-    """
-    allowed_files = ['investopedia.txt', 'kremp.txt', 'wikipedia.txt']
-    if filename not in allowed_files:
-        return f"Error: File '{filename}' is not an allowed source. Please use one of {allowed_files}."
-    
-    # Path is relative to the current working directory when the script is run.
-    # If script is in 'backend/' and run from 'backend/', './documents/' resolves to 'backend/documents/'.
-    filepath_relative_to_cwd = f"./documents/{filename}"
-    
-    try:
-        # Assuming documents are in a 'documents' subdirectory relative to the Current Working Directory (CWD)
-        with open(filepath_relative_to_cwd, "r", encoding="utf-8") as f:
-            return f.read()
-    except FileNotFoundError:
-        # Updated error message to be more precise about the path searched
-        return f"Error: File '{filename}' not found at '{filepath_relative_to_cwd}' (path is relative to the current working directory)."
-    except Exception as e:
-        return f"An error occurred while fetching {filename}: {e}"
+class ChapterScript(BaseModel):
+    script_text: str
 
-# --- Agent Definitions ---
-content_fetcher_agent = Agent(
-    name="Content Fetcher Agent",
+# --- Agent Definitions for New Workflow ---
+toc_generator_agent = Agent(
+    name="Table of Contents Generator Agent",
     instructions=(
-        "Your primary goal is to gather textual information for an audiobook script. "
-        "You must fetch content from three specific files: 'investopedia.txt', then 'kremp.txt', and finally 'wikipedia.txt', using the 'fetch_data' tool for each. "
-        "Combine the content from these three files into a single text block. "
-        "Preserve the original user request alongside the combined text for context in subsequent steps."
+        "You are an expert content planner. Based on the user's request for an audiobook of a specific length and topic, "
+        "your task is to create a detailed table of contents. Break the topic into logical, sequential chapters. "
+        "For each chapter, provide a concise title and a brief, one-sentence description of its content. "
+        "Crucially, you must divide the total requested audiobook length evenly among the chapters you create. "
+        "For example, a 30-minute audiobook with 6 chapters should have each chapter allocated 5 minutes."
     ),
-    tools=[fetch_data],
-    output_type=FetchedContent,
+    output_type=TableOfContents,
 )
 
-script_producer_agent = Agent(
-    name="Script Producer Agent",
+chapter_script_generator_agent = Agent(
+    name="Chapter Script Generator Agent",
     instructions=(
-        "You are an expert scriptwriter. Your primary and most critical task is to generate a script that meets a specific word count. "
-        "The user's request will contain a target word count. It is a strict requirement that you produce a script with at least that many words. "
-        "Do not write a script shorter than the requested word count, as this is considered a failure. "
-        "Based on the original user request and the provided combined text, generate a final, polished audiobook script structured into logical chapters, ensuring it meets the length requirement."
+        "You are an expert scriptwriter. Your task is to write the script for a *single* chapter of an audiobook. "
+        "You will be given the chapter title, a description of its content, and a target word count. "
+        "Your primary goal is to write a script that meets the target word count. This is a strict requirement. "
+        "The script should be engaging, clear, and tailored to the expertise level specified in the original request."
     ),
-    output_type=FinalAudiobookScript,
+    output_type=ChapterScript,
 )
 
 AUDIO_DIR = Path(__file__).parent / "audio_files"
@@ -103,103 +82,90 @@ async def generate_audio(request: GenerateRequest):
     """
     audio_id = str(uuid.uuid4())
     
-    # Calculate target word count for the prompt
-    words_per_minute = 150  # Standard speaking pace
-    target_word_count = request.length * words_per_minute
-
-    # Dynamically create a more forceful prompt
+    # Create the initial prompt for the ToC agent
     original_user_input = (
-        f"Your main goal is to generate a script for a {request.length}-minute long audiobook on the topic of '{request.topic}'. "
-        f"To achieve this, the script's length is critical. It MUST contain at least {target_word_count} words. This is a strict requirement. "
-        f"The script must be tailored for a {request.expertise} level audience, covering the topic, its principles, and outcomes."
+        f"Generate a table of contents for a {request.length}-minute long audiobook on the topic of '{request.topic}'. "
+        f"The script should be tailored for a {request.expertise} level audience."
     )
     
-    print(f"Received request: {request}. Starting agent run with a strict target of at least {target_word_count} words.")
+    print(f"Received request: {request}. Starting audiobook generation...")
 
     try:
-        # --- Run Agents Sequentially ---
+        # --- Stage 1: Generate Table of Contents ---
+        print("Stage 1: Generating Table of Contents...")
+        toc_result = await Runner.run(toc_generator_agent, input=original_user_input)
+        if not isinstance(toc_result.final_output, TableOfContents):
+            raise Exception(f"Table of Contents generation failed. Output: {toc_result.final_output}")
+        table_of_contents = toc_result.final_output
 
-        # 1. Fetch Content
-        print("Step 1: Running Content Fetcher Agent...")
-        fetched_content_result = await Runner.run(content_fetcher_agent, input=original_user_input)
-        if not isinstance(fetched_content_result.final_output, FetchedContent):
-            raise Exception(f"Content Fetcher failed. Final output: {fetched_content_result.final_output}")
-
-        # Prepare input for the next agent
-        producer_input_text = (
-            f"--- ORIGINAL USER REQUEST ---\\n{fetched_content_result.final_output.original_request}\\n\\n"
-            f"--- COMBINED SOURCE TEXT ---\\n{fetched_content_result.final_output.combined_text}"
-        )
-
-        # 2. Generate Final Script (Combined Step)
-        print("Step 2: Running Script Producer Agent...")
-        final_script_result = await Runner.run(
-            script_producer_agent, 
-            input=producer_input_text # The runner can handle a single string input
-        )
-        if not isinstance(final_script_result.final_output, FinalAudiobookScript):
-            raise Exception(f"Script Producer failed. Final output: {final_script_result.final_output}")
-
-        # --- Generate Audio ---
-        print("\n--- Final Audiobook Script Generation ---")
-        speech_file_path = AUDIO_DIR / f"{audio_id}.mp3"
-        final_script_text = final_script_result.final_output.script_in_chapters
-
-        # --- New: Chunking logic to handle API limit ---
-        def chunk_text(text, max_length=2500): # Use a more conservative limit
-            paragraphs = text.split('\n\n')
-            chunks = []
-            current_chunk = ""
-            for paragraph in paragraphs:
-                if len(current_chunk) + len(paragraph) + 2 < max_length:
-                    current_chunk += paragraph + '\n\n'
-                else:
-                    if current_chunk:
-                        chunks.append(current_chunk)
-                    current_chunk = paragraph + '\n\n'
-            if current_chunk:
-                chunks.append(current_chunk)
-            return chunks
-
-        script_chunks = chunk_text(final_script_text)
-        audio_segments = []
+        # --- Stage 2: Process each chapter iteratively ---
+        all_chapter_audio_segments = []
         temp_chunk_dir = AUDIO_DIR / f"temp_{audio_id}"
         temp_chunk_dir.mkdir(exist_ok=True)
+        words_per_minute = 150
 
-        try:
-            for i, chunk in enumerate(script_chunks):
-                chunk_file_path = temp_chunk_dir / f"chunk_{i}.mp3"
-                print(f"Generating audio for chunk {i+1}/{len(script_chunks)}...")
-                with client.audio.speech.with_streaming_response.create(
-                    model="tts-1",
-                    voice="coral",
-                    input=chunk,
-                ) as response:
+        for i, chapter in enumerate(table_of_contents.chapters):
+            chapter_num = i + 1
+            print(f"--- Processing Chapter {chapter_num}/{len(table_of_contents.chapters)}: {chapter.chapter_title} ---")
+            
+            # --- a) Generate script for the chapter ---
+            target_word_count = int(chapter.chapter_length_minutes * words_per_minute)
+            chapter_prompt = (
+                f"Original Request Context: An audiobook for a {request.expertise}-level audience on '{request.topic}'.\\n"
+                f"--- Chapter Details ---\\n"
+                f"Title: {chapter.chapter_title}\\n"
+                f"Description: {chapter.chapter_description}\\n"
+                f"CRITICAL REQUIREMENT: The script for this chapter MUST be at least {target_word_count} words long."
+            )
+            print(f"Generating script for chapter {chapter_num} with target of ~{target_word_count} words.")
+            script_result = await Runner.run(chapter_script_generator_agent, input=chapter_prompt)
+            if not isinstance(script_result.final_output, ChapterScript):
+                 raise Exception(f"Script generation for chapter {chapter_num} failed.")
+            chapter_script_text = script_result.final_output.script_text
+
+            # --- b) Generate audio for the chapter script (using chunking) ---
+            def chunk_text(text, max_length=2500):
+                paragraphs = text.split('\n\n')
+                chunks = []
+                current_chunk = ""
+                for paragraph in paragraphs:
+                    if len(current_chunk) + len(paragraph) + 2 < max_length:
+                        current_chunk += paragraph + '\n\n'
+                    else:
+                        if current_chunk: chunks.append(current_chunk)
+                        current_chunk = paragraph + '\n\n'
+                if current_chunk: chunks.append(current_chunk)
+                return chunks
+
+            script_chunks = chunk_text(chapter_script_text)
+            chapter_audio_segments = []
+            
+            for j, chunk in enumerate(script_chunks):
+                chunk_file_path = temp_chunk_dir / f"chapter_{chapter_num}_chunk_{j}.mp3"
+                print(f"Generating audio for chapter {chapter_num}, chunk {j+1}/{len(script_chunks)}...")
+                with client.audio.speech.with_streaming_response.create(model="tts-1", voice="coral", input=chunk) as response:
                     response.stream_to_file(chunk_file_path)
-                
-                audio_segments.append(AudioSegment.from_mp3(chunk_file_path))
+                chapter_audio_segments.append(AudioSegment.from_mp3(chunk_file_path))
             
-            # --- New: Concatenate audio segments ---
-            print("Combining audio chunks...")
-            final_audio = sum(audio_segments) if audio_segments else AudioSegment.empty()
-            
-            # Export the final combined audio file
-            final_audio.export(speech_file_path, format="mp3")
+            # Combine audio for the current chapter and add to the main list
+            if chapter_audio_segments:
+                all_chapter_audio_segments.append(sum(chapter_audio_segments))
 
-        finally:
-            # --- New: Clean up temporary chunk files and directory ---
+        # --- Stage 3: Stitch all chapter audio together ---
+        print("Finalizing: Stitching all chapter audio files together...")
+        final_audio = sum(all_chapter_audio_segments) if all_chapter_audio_segments else AudioSegment.empty()
+        speech_file_path = AUDIO_DIR / f"{audio_id}.mp3"
+        final_audio.export(speech_file_path, format="mp3")
+
+    finally:
+        # --- Final cleanup ---
+        if temp_chunk_dir.exists():
             for file in temp_chunk_dir.glob("*.mp3"):
                 os.remove(file)
             os.rmdir(temp_chunk_dir)
 
-        print(f"Audio file successfully saved to {speech_file_path}")
-        return GenerateResponse(audio_id=audio_id, status="Audio generation complete")
-
-    except Exception as e:
-        print(f"\n--- An error occurred during the agent pipeline ---")
-        traceback.print_exc()
-        error_message = f"An error occurred: {repr(e)}"
-        return GenerateResponse(audio_id=audio_id, status=error_message)
+    print(f"Audiobook successfully generated and saved to {speech_file_path}")
+    return GenerateResponse(audio_id=audio_id, status="Audiobook generation complete.")
 
 @app.get("/download/{audio_id}")
 async def download_audio(audio_id: str):
@@ -212,5 +178,5 @@ async def download_audio(audio_id: str):
     return FileResponse(file_path, media_type="audio/mpeg", filename=f"{audio_id}.mp3")
 
 # To run this app:
-# 1. Install necessary packages: pip install fastapi uvicorn python-multipart
+# 1. Install necessary packages: pip install fastapi uvicorn python-multipart pydub
 # 2. Run from the terminal in the backend directory: uvicorn agent:app --reload

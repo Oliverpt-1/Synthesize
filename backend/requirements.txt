@@ -1,6 +1,8 @@
 fastapi
-uvicorn[standard]
-pydantic
+uvicorn
 openai
-gtts
+openai-agents
+pydub
+python-multipart
+
 # python-elevenlabs 
